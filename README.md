@@ -154,8 +154,8 @@ This codebase is built with reference implementations from [FQL](https://github.
 @article{zhou2026qgf,
   title   = {Test-Time Gradient Guidance of Flow Policies in Reinforcement Learning},
   author  = {Zhou, Zhiyuan and Peng, Andy and Xu, Charles and Li, Qiyang and
-             Springenberg, Tobias and Frans, Kevin and Levine, Sergey},
+             Springenberg, Jost Tobias and Frans, Kevin and Levine, Sergey},
   year    = {2026},
-  url     = {https://arxiv.org/abs/2606.11087},
+  journal = {arXiv preprint arXiv:2606.11087},
 }
 ```
