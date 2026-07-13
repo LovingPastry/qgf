@@ -14,3 +14,6 @@ plots/
 .claude/
 sbatch/
 paper/
+
+# downloaded paper PDF (kept locally under docs/, not committed)
+docs/paper.pdf

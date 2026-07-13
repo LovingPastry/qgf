@@ -1,0 +1,876 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Q-Guided Flow · 测试时用价值梯度引导流策略</title>
+<meta name="description" content="QGF (Q-Guided Flow) 的算法与代码逐行对照说明页 —— 一个只用监督损失训练、在推理时用 critic 梯度引导去噪的 test-time RL 算法。" />
+
+<style>
+  /* ============================ Design tokens ============================ */
+  :root {
+    /* cool "paper / blueprint" neutrals — chosen with a slight blue bias, not defaulted */
+    --bg:        #F4F6F8;
+    --bg-2:      #FBFCFD;
+    --surface:   #FFFFFF;
+    --ink:       #1A1D23;
+    --ink-soft:  #3C424C;
+    --muted:     #636A75;
+    --faint:     #8A919C;
+    --line:      #E2E7EC;
+    --line-2:    #CDD5DE;
+    /* one bold place: steel blue (the paper's own accent, deepened for contrast) */
+    --accent:    #2C6E9E;
+    --accent-2:  #245C85;
+    --accent-sf: #E9F1F7;
+    /* teal is reserved strictly for the QGF method's own path — grounded in the paper's figures */
+    --teal:      #12897B;
+    --teal-sf:   #E2F2EF;
+    /* amber marks the "problems / failure modes" — semantic, not an accent */
+    --amber:     #9E6416;
+    --amber-sf:  #F5EDDF;
+    --code-bg:   #FAFBFD;
+    --hl:        rgba(44,110,158,0.09);
+    --hl-teal:   rgba(18,137,123,0.10);
+    --hl-amber:  rgba(158,100,22,0.09);
+    --shadow:    0 1px 2px rgba(20,28,40,.04), 0 6px 22px -12px rgba(20,28,40,.14);
+
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", system-ui, sans-serif;
+    --math: "Latin Modern Roman", "Times New Roman", Georgia, "Songti SC", "STSong", serif;
+    --mono: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+
+    --measure: 43rem;   /* ~text column */
+    --wide:    56rem;   /* figures & code can breathe wider */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#121418; --bg-2:#171A1F; --surface:#1B1F26;
+      --ink:#E8EBF0; --ink-soft:#C4CAD3; --muted:#98A0AC; --faint:#6B7380;
+      --line:#262B33; --line-2:#343B45;
+      --accent:#7DB2D9; --accent-2:#9AC6E6; --accent-sf:#182530;
+      --teal:#40C8B5; --teal-sf:#0F2420;
+      --amber:#D3A257; --amber-sf:#241C10;
+      --code-bg:#14171C;
+      --hl:rgba(125,178,217,0.12); --hl-teal:rgba(64,200,181,0.13); --hl-amber:rgba(211,162,87,0.12);
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#121418; --bg-2:#171A1F; --surface:#1B1F26;
+    --ink:#E8EBF0; --ink-soft:#C4CAD3; --muted:#98A0AC; --faint:#6B7380;
+    --line:#262B33; --line-2:#343B45;
+    --accent:#7DB2D9; --accent-2:#9AC6E6; --accent-sf:#182530;
+    --teal:#40C8B5; --teal-sf:#0F2420;
+    --amber:#D3A257; --amber-sf:#241C10;
+    --code-bg:#14171C;
+    --hl:rgba(125,178,217,0.12); --hl-teal:rgba(64,200,181,0.13); --hl-amber:rgba(211,162,87,0.12);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+
+  /* ============================ Base ============================ */
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.75;
+    letter-spacing: .003em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent-sf); }
+
+  .wrap { width: 100%; max-width: var(--measure); margin-inline: auto; padding-inline: 22px; }
+  .wide { max-width: var(--wide); }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+  h1,h2,h3 { text-wrap: balance; line-height: 1.22; letter-spacing: -.012em; font-weight: 660; }
+  p { margin: 0 0 1.05em; }
+  strong { font-weight: 650; color: var(--ink); }
+  sub, sup { line-height: 0; font-size: .74em; }
+
+  .m { font-family: var(--math); font-style: italic; font-size: 1.04em; letter-spacing: 0; }
+  .m sub, .m sup { font-style: italic; }
+
+  /* ============================ Top nav ============================ */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    -webkit-backdrop-filter: saturate(1.4) blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-in { max-width: var(--wide); margin-inline: auto; padding: 11px 22px;
+    display: flex; align-items: center; gap: 18px; }
+  .brand { display: flex; align-items: baseline; gap: 9px; font-weight: 680; letter-spacing: -.02em; }
+  .brand .qgf { color: var(--accent); }
+  .brand .sub { font-size: .74rem; color: var(--faint); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
+  nav.links { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+  nav.links a {
+    color: var(--muted); font-size: .82rem; padding: 5px 10px; border-radius: 6px;
+    letter-spacing: .01em; transition: color .15s, background .15s;
+  }
+  nav.links a:hover { color: var(--ink); background: var(--bg-2); text-decoration: none; }
+  .toggle {
+    flex: none; width: 34px; height: 34px; display: grid; place-items: center;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s;
+  }
+  .toggle:hover { color: var(--ink); border-color: var(--line-2); }
+  .toggle svg { width: 17px; height: 17px; }
+  .toggle .moon { display: none; }
+  :root[data-theme="dark"] .toggle .sun { display: none; }
+  :root[data-theme="dark"] .toggle .moon { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .toggle .sun { display: none; }
+    :root:not([data-theme="light"]) .toggle .moon { display: block; }
+  }
+  @media (max-width: 720px) { nav.links { display: none; } }
+
+  /* ============================ Hero ============================ */
+  .hero { padding: 74px 0 26px; }
+  .eyebrow {
+    font-size: .76rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); font-weight: 640; margin-bottom: 18px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before { content: ""; width: 24px; height: 1.5px; background: var(--accent); display: inline-block; }
+  .hero h1 { font-size: clamp(2.5rem, 7vw, 3.7rem); margin: 0 0 .35em; letter-spacing: -.028em; font-weight: 720; }
+  .hero .lede { font-size: clamp(1.08rem, 2.4vw, 1.32rem); color: var(--ink-soft); line-height: 1.55; margin-bottom: 1.5em; font-weight: 420; }
+  .papertitle {
+    font-family: var(--math); font-style: italic; font-size: 1.06rem; color: var(--ink);
+    border-left: 2px solid var(--line-2); padding-left: 15px; margin-bottom: .5em; line-height: 1.5;
+  }
+  .authors { color: var(--muted); font-size: .92rem; margin-bottom: .2em; }
+  .affil { color: var(--faint); font-size: .84rem; }
+  .herolinks { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px; font-size: .88rem; font-weight: 560;
+    padding: 8px 15px; border-radius: 9px; border: 1px solid var(--line-2);
+    background: var(--surface); color: var(--ink); transition: border-color .15s, transform .1s, box-shadow .15s;
+  }
+  .btn:hover { text-decoration: none; border-color: var(--accent); box-shadow: var(--shadow); transform: translateY(-1px); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :root[data-theme="dark"] .btn.primary { color: #0c1116; }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .btn.primary{ color:#0c1116; } }
+  .btn svg { width: 15px; height: 15px; }
+
+  /* ============================ Sections ============================ */
+  section { padding: 30px 0; }
+  section > .wrap > .eyebrow, section > .wrap > .wide > .eyebrow { margin-top: 8px; }
+  h2.sec { font-size: clamp(1.5rem, 3.4vw, 1.95rem); margin: 6px 0 .7em; letter-spacing: -.02em; }
+  h3 { font-size: 1.16rem; margin: 2em 0 .5em; color: var(--ink); }
+  .divider { border: none; border-top: 1px solid var(--line); margin: 12px auto; max-width: var(--wide); }
+
+  /* TL;DR card */
+  .tldr {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 24px 26px; box-shadow: var(--shadow); margin: 8px 0 6px;
+  }
+  .tldr h3 { margin: 0 0 .5em; font-size: 1rem; letter-spacing: .02em; color: var(--accent); text-transform: uppercase; }
+  .tldr p:last-child { margin-bottom: 0; }
+  .tldr .big { font-size: 1.12rem; line-height: 1.7; color: var(--ink); }
+
+  /* figure */
+  figure { margin: 26px 0; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+  figcaption { color: var(--muted); font-size: .86rem; line-height: 1.6; margin-top: 12px; }
+  figcaption b { color: var(--ink-soft); font-weight: 620; }
+
+  /* equations */
+  .eq {
+    display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 20px; margin: 18px 0; overflow-x: auto;
+  }
+  .eq .body { font-family: var(--math); font-size: 1.16rem; font-style: italic; color: var(--ink); white-space: nowrap; }
+  .eq .body .op { font-style: normal; padding: 0 .12em; }
+  .eq .num { font-family: var(--math); color: var(--faint); font-size: .95rem; font-style: normal; }
+  .eq.hero-eq { border-color: var(--teal); background: var(--teal-sf); }
+
+  /* callouts */
+  .call { border-radius: 12px; padding: 16px 18px 16px 46px; margin: 20px 0; position: relative; font-size: .97rem; line-height: 1.65; border: 1px solid var(--line); background: var(--surface); }
+  .call::before { position: absolute; left: 15px; top: 15px; font-family: var(--math); font-style: italic; font-weight: 700; font-size: 1.05rem; width: 20px; text-align: center; }
+  .call.key { border-color: color-mix(in srgb, var(--teal) 40%, var(--line)); background: var(--hl-teal); }
+  .call.key::before { content: "★"; color: var(--teal); font-style: normal; }
+  .call.warn { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); background: var(--hl-amber); }
+  .call.warn::before { content: "!"; color: var(--amber); }
+  .call.note { }
+  .call.note::before { content: "i"; color: var(--accent); }
+  .call b { color: var(--ink); }
+
+  /* ============================ Code ============================ */
+  .code {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px;
+    overflow: hidden; margin: 16px 0; box-shadow: var(--shadow);
+  }
+  .code .head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+    border-bottom: 1px solid var(--line); background: var(--bg-2);
+    font-family: var(--mono); font-size: .78rem; color: var(--muted);
+  }
+  .code .head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-2); flex: none; }
+  .code .head .file { color: var(--ink-soft); font-weight: 600; }
+  .code .head .tag { margin-left: auto; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+  .code .body { overflow-x: auto; padding: 8px 0; }
+  .code pre { margin: 0; font-family: var(--mono); font-size: .82rem; line-height: 1.62; }
+  .row { display: grid; grid-template-columns: 3.3em 1fr; }
+  .row .n { text-align: right; padding-right: 14px; color: var(--faint); user-select: none; font-variant-numeric: tabular-nums; border-right: 1px solid var(--line); }
+  .row .c { padding: 0 16px; white-space: pre; color: var(--ink-soft); }
+  .row.hl { background: var(--hl); }
+  .row.hl .n { color: var(--accent); }
+  .row.hl .c { color: var(--ink); }
+  .row.hlt { background: var(--hl-teal); }
+  .row.hlt .n { color: var(--teal); }
+  .row.hlt .c { color: var(--ink); }
+  .row.el .c { color: var(--faint); }
+  .row .cmt { color: var(--faint); font-style: italic; }
+  .row.hl .cmt { color: var(--accent-2); }
+  .row.hlt .cmt { color: var(--teal); }
+  .kw { color: var(--accent); }        /* keyword-ish */
+  .fn { color: var(--teal); }          /* function/method */
+  .st { color: var(--amber); }         /* string */
+
+  /* algorithm box */
+  .algo { background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; padding: 4px 0 12px; margin: 20px 0; box-shadow: var(--shadow); overflow: hidden; }
+  .algo .cap { padding: 12px 20px; border-bottom: 1px solid var(--line); font-weight: 640; font-size: .92rem; letter-spacing: .01em; display: flex; gap: 10px; align-items: center; }
+  .algo .cap .lbl { font-family: var(--mono); font-size: .72rem; color: #fff; background: var(--teal); padding: 2px 8px; border-radius: 5px; }
+  .algo ol { margin: 12px 0 0; padding: 0 22px 0 46px; }
+  .algo li { margin: 4px 0; font-size: .95rem; line-height: 1.7; }
+  .algo .kwd { font-family: var(--math); font-style: italic; color: var(--accent); font-weight: 600; }
+  .algo .cm { color: var(--muted); font-size: .86rem; }
+  .algo .mono { font-family: var(--math); font-style: italic; }
+
+  /* explanation stacked above a full-width code block — keeps every code line + its
+     equation-mapping comment fully legible (a side-by-side column would clip them) */
+  .pair { display: block; margin: 26px 0; }
+  .pair .side { max-width: var(--measure); margin-bottom: 11px; }
+  .pair .side h4 { margin: 2px 0 5px; font-size: 1rem; color: var(--ink); }
+  .pair .side .lead { color: var(--muted); font-size: .92rem; margin-bottom: 0; }
+  .pair .code { margin: 0; }
+
+  /* schematic */
+  .schematic { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin: 22px 0; box-shadow: var(--shadow); }
+  .schematic svg { width: 100%; height: auto; display: block; }
+  .sc-ink   { stroke: var(--line-2); }
+  .sc-inkf  { fill: var(--ink); }
+  .sc-mut   { fill: var(--muted); }
+  .sc-acc   { stroke: var(--accent); }
+  .sc-accf  { fill: var(--accent); }
+  .sc-teal  { stroke: var(--teal); }
+  .sc-tealf { fill: var(--teal); }
+  .sc-ring  { stroke: var(--line-2); fill: none; }
+  .sc-lbl   { font-family: var(--math); font-style: italic; font-size: 15px; }
+  .sc-cap   { font-family: var(--sans); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+
+  /* comparison table */
+  .tbl-wrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; min-width: 560px; }
+  thead th { text-align: left; padding: 12px 15px; background: var(--bg-2); color: var(--ink); font-weight: 640; border-bottom: 1px solid var(--line-2); font-size: .82rem; letter-spacing: .02em; }
+  tbody td { padding: 12px 15px; border-bottom: 1px solid var(--line); color: var(--ink-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.win td { background: var(--hl-teal); }
+  tbody tr.win td:first-child { color: var(--teal); font-weight: 640; }
+  td .m, th .m { white-space: nowrap; }
+
+  /* results grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; margin: 20px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; transition: border-color .15s, transform .12s; }
+  .card:hover { border-color: var(--line-2); transform: translateY(-2px); }
+  .card .fig { font-family: var(--mono); font-size: .72rem; color: var(--accent); letter-spacing: .04em; text-transform: uppercase; margin-bottom: 7px; }
+  .card .stat { font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; color: var(--ink); margin-bottom: 3px; font-variant-numeric: tabular-nums; }
+  .card p { margin: 0; font-size: .88rem; color: var(--muted); line-height: 1.55; }
+
+  /* file tree */
+  .tree { font-family: var(--mono); font-size: .82rem; line-height: 1.85; background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; overflow-x: auto; white-space: pre; color: var(--ink-soft); }
+  .tree .d { color: var(--accent); font-weight: 600; }
+  .tree .star { color: var(--teal); font-weight: 700; }
+  .tree .cm { color: var(--faint); }
+
+  ul.clean { margin: 0 0 1em; padding-left: 1.2em; }
+  ul.clean li { margin: .4em 0; }
+  ul.clean li::marker { color: var(--accent); }
+
+  /* footer */
+  footer { border-top: 1px solid var(--line); margin-top: 40px; padding: 40px 0 60px; color: var(--muted); font-size: .88rem; }
+  footer .cite { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-family: var(--mono); font-size: .76rem; line-height: 1.6; overflow-x: auto; color: var(--ink-soft); white-space: pre; margin: 10px 0 20px; }
+  footer a { color: var(--accent); }
+
+  /* reveal on scroll */
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .btn:hover, .card:hover { transform: none; }
+  }
+</style>
+
+<!-- ============================ NAV ============================ -->
+<header class="nav">
+  <div class="nav-in">
+    <span class="brand"><span class="qgf">QGF</span><span class="sub">zhouzypaul/qgf</span></span>
+    <nav class="links">
+      <a href="#overview">概览</a>
+      <a href="#problem">问题</a>
+      <a href="#background">背景</a>
+      <a href="#estimator">估计器</a>
+      <a href="#code">代码对照</a>
+      <a href="#run">怎么跑</a>
+      <a href="#results">结果</a>
+    </nav>
+    <button class="toggle" id="themeBtn" aria-label="切换深色 / 浅色主题" title="切换主题">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.3 6.3 0 0 0 10.5 10.5z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ============================ HERO ============================ -->
+<div class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Test-Time RL · Flow Policy</div>
+    <h1>Q-Guided Flow</h1>
+    <p class="lede">训练时只用两个稳定的监督目标（BC 流匹配 + IQL critic）；推理时用价值函数的梯度去<strong>引导每一步去噪</strong>，把动作推向更高 Q 值 —— 全程<strong>不做 actor-critic 训练</strong>。</p>
+    <p class="papertitle">Test-Time Gradient Guidance of Flow Policies in Reinforcement Learning</p>
+    <p class="authors">Zhiyuan Zhou · Andy Peng · Charles Xu · Qiyang Li · Jost Tobias Springenberg · Kevin Frans · Sergey Levine</p>
+    <p class="affil">UC Berkeley &nbsp;·&nbsp; Physical Intelligence &nbsp;·&nbsp; arXiv:2606.11087 (2026)</p>
+    <div class="herolinks">
+      <a class="btn primary" href="https://arxiv.org/pdf/2606.11087" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg>论文 (arXiv)</a>
+      <a class="btn" href="https://q-guided-flow.github.io/" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>项目主页</a>
+      <a class="btn" href="https://github.com/zhouzypaul/qgf" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2A10 10 0 0 0 8.8 21.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.4-2.2-.2-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.3 4.8-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg>代码仓库</a>
+      <a class="btn" href="./paper.pdf">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>本地 PDF</a>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ 概览 / TEASER ============================ -->
+<section id="overview">
+  <div class="wrap wide reveal">
+    <figure>
+      <img src="./teaser.png" alt="QGF 与三种去噪引导方式的对比示意图：Behavior Flow Policy、Backprop Through Time、Gradient on Noisy a_t、QGF (ours)。" />
+      <figcaption><b>图 1（论文 Teaser）。</b> 一条流策略把噪声 <span class="m">a<sub>0</sub></span> 逐步去噪成动作 <span class="m">a<sub>1</sub></span>。要用 critic 引导这个过程，已有做法要么<b>对整条去噪链反传（BPTT）</b>——昂贵且不稳定，要么<b>直接在噪声动作 <span class="m">a<sub>t</sub></span> 上取 Q 梯度</b>——而 critic 从没在这种带噪动作上训练过，梯度有偏。<b>QGF（右）</b>先用一步大 Euler 把 <span class="m">a<sub>t</sub></span> 近似成干净动作 <span class="m">â<sub>1</sub></span>，只在 <span class="m">â<sub>1</sub></span> 处取 <span class="m">∇<sub>â<sub>1</sub></sub>Q</span> 来引导。</figcaption>
+    </figure>
+  </div>
+
+  <div class="wrap reveal">
+    <div class="tldr">
+      <h3>一句话</h3>
+      <p class="big">把「策略提升」整个搬到<strong>测试时（test-time）</strong>：训练阶段只做两件互不耦合、都非常稳定的监督学习 —— 用 <strong>flow matching</strong> 行为克隆出一个参考策略，用 <strong>IQL</strong> 学一个 in-sample 的 Q/V。到了推理，才用 <span class="m">∇<sub>a</sub>Q</span> 像 classifier guidance 一样，在去噪的每一步把动作往高价值方向推。</p>
+      <p>这样就<strong>绕开</strong>了把表达力强的流/扩散策略塞进 RL 时那些老大难：既不用设计特殊的 RL 训练目标，也不用对去噪过程反向传播 —— 而这些正是 actor-critic 训练不稳定、难扩展的根源。</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 问题 ============================ -->
+<section id="problem">
+  <div class="wrap reveal">
+    <div class="eyebrow">The Tension</div>
+    <h2 class="sec">为什么「流策略 + RL」这么难</h2>
+    <p>Diffusion / flow 模型能表示复杂、多模态的动作分布，在<strong>纯监督</strong>的行为克隆里扩展性极好。但一旦要用它做<strong>策略提升</strong>，麻烦就来了：RL 通常在「学一个会变的 Q」和「优化 actor 去最大化这个 Q」之间反复横跳，这种耦合的训练动态对超参极其敏感、容易发散，模型越大越难训。</p>
+    <p>要用 critic 的梯度 <span class="m">∇<sub>a</sub>Q(s,a)</span> 来引导动作生成，而动作又是<strong>迭代去噪</strong>产生的，此前主要有三条路，各有各的痛：</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>路线</th><th>做法</th><th>痛点</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>特殊训练目标</td>
+            <td>为流/扩散策略设计专门的 actor-critic 目标（FQL、QAM、DAC、EDP…）</td>
+            <td>需要精调「奖励最大化 vs 行为约束」的权衡超参；训练耦合、不稳定</td>
+          </tr>
+          <tr>
+            <td>BPTT 梯度</td>
+            <td>把带噪动作 <span class="m">a<sub>t</sub></span> 沿 ODE 完整去噪成 <span class="m">a<sub>1</sub></span>，对整条链反传 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s, ODE(a<sub>t</sub>))</span></td>
+            <td>昂贵；对噪声极敏感、<strong>方差高</strong>；实践中不稳定（论文 Fig 3 / Fig 14）</td>
+          </tr>
+          <tr>
+            <td>噪声动作梯度（OOD）</td>
+            <td>直接在带噪动作上取 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s, a<sub>t</sub>)</span>（QFQL）</td>
+            <td>critic 只在<strong>干净动作</strong>上训过，<span class="m">a<sub>t</sub></span> 属于 OOD，梯度<strong>有偏</strong>，把动作引导到次优解（Fig 2）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>QGF 的回答是：<strong>换一个梯度估计器</strong> —— 既不查 OOD 的 Q，也不做 BPTT，还比两者方差都低。</p>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 背景 ============================ -->
+<section id="background">
+  <div class="wrap reveal">
+    <div class="eyebrow">Background</div>
+    <h2 class="sec">从 KL 正则目标推到「引导」</h2>
+
+    <h3>① Flow matching 参考策略</h3>
+    <p>流策略用一个含时速度场 <span class="m">v<sub>θ</sub>(x,t)</span> 把噪声 <span class="m">p<sub>0</sub>=𝒩(0,I)</span> 沿 ODE 输运到数据分布。以状态 <span class="m">s</span> 为条件、以数据集动作为目标，训练损失是速度回归：</p>
+    <div class="eq">
+      <span class="body">ℒ<sub>FM</sub>(θ) = 𝔼<sub>t,x<sub>0</sub>,x<sub>1</sub></sub><span class="op">[</span> ‖ v<sub>θ</sub>(x<sub>t</sub>,t) <span class="op">−</span> (x<sub>1</sub><span class="op">−</span>x<sub>0</sub>) ‖²₂ <span class="op">]</span>,&nbsp;&nbsp; x<sub>t</sub>=(1<span class="op">−</span>t)x<sub>0</sub><span class="op">+</span>t·x<sub>1</sub></span>
+      <span class="num">(2)</span>
+    </div>
+    <p>推理时从 <span class="m">a<sub>0</sub>∼p<sub>0</sub></span> 积分到 <span class="m">a<sub>1</sub></span>，就得到策略样本 <span class="m">π̂(a|s)</span>。全文把策略样本叫「denoised action」，中间产物叫「noisy action」。</p>
+
+    <h3>② IQL 的 in-sample critic</h3>
+    <p>关键选择：用 <strong>IQL</strong> 学 Q —— 它只用数据集里出现过的 <span class="m">(s,a)</span>，靠一个状态价值 <span class="m">V<sub>ψ</sub></span> 做期望回归（expectile），<strong>完全不需要从策略里采样动作</strong>。这让价值学习和策略抽取彻底解耦：</p>
+    <div class="eq">
+      <span class="body">ℒ<sub>V</sub>(ψ) = 𝔼<sub>(s,a)∼D</sub><span class="op">[</span> L<sup>τ</sup><sub>2</sub><span class="op">(</span>Q(s,a) <span class="op">−</span> V<sub>ψ</sub>(s)<span class="op">)</span> <span class="op">]</span>,&nbsp;&nbsp; L<sup>τ</sup><sub>2</sub>(u)=|τ<span class="op">−</span>𝟙(u&lt;0)|·u²</span>
+      <span class="num"> </span>
+    </div>
+
+    <h3>③ 从闭式解到「引导」</h3>
+    <p>对参考策略 <span class="m">π̂</span> 的 KL 正则化奖励最大化（<span class="m">β&gt;0</span> 控制约束强度）有经典闭式解：</p>
+    <div class="eq"><span class="body">π(a|s) <span class="op">∝</span> π̂(a|s) · exp<span class="op">(</span>Q(s,a)<span class="op">)</span><sup>1/β</sup></span><span class="num">(3)</span></div>
+    <p>把它转成对数梯度（score）。由于流对应一个 score 函数，可写成参考策略的 score 加一项价值梯度；再按前人做法推广到去噪中间的带噪动作 <span class="m">a<sub>t</sub></span>：</p>
+    <div class="eq"><span class="body">∇<sub>a</sub> log π(a|s) = ∇<sub>a</sub> log π̂(a|s) <span class="op">+</span> (1/β)·∇<sub>a</sub>Q(s,a)</span><span class="num">(4)</span></div>
+    <div class="eq"><span class="body">∇<sub>a<sub>t</sub></sub> log π(a<sub>t</sub>|s) ≈ ∇<sub>a<sub>t</sub></sub> log π̂(a<sub>t</sub>|s) <span class="op">+</span> (1/β)·∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span><span class="num">(5)</span></div>
+    <p>直觉：在去噪速度上<strong>加一项价值梯度</strong>，就把参考策略往高 Q 方向推 —— 权重 <span class="m">1/β</span> 越大越激进。这正是「用学到的 Q 当分类器」的 classifier guidance。<strong>唯一的问题只剩一个：式 (5) 里那项 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span> 怎么算才靠谱？</strong></p>
+    <div class="call warn"><b>式 (5) 的陷阱：</b>直接照它在噪声动作 <span class="m">a<sub>t</sub></span> 上取 Q 梯度，就是「OOD 梯度」（QFQL 的做法）。<span class="m">a<sub>t</sub>∈ℝ<sup>|A|</sup></span> 甚至可能不是合法动作，而 critic 从没见过它 —— 梯度有偏，收敛到次优（Fig 2）。</div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 估计器 ============================ -->
+<section id="estimator">
+  <div class="wrap reveal">
+    <div class="eyebrow">The Estimator · QGF</div>
+    <h2 class="sec">QGF 的梯度估计器：一步 Euler + 丢掉 Jacobian</h2>
+    <p>与其在噪声动作上硬取梯度，QGF 先<strong>便宜地估出干净动作</strong>：沿当前速度场走<strong>一步大 Euler</strong>直接跳到去噪终点（这是对整条 ODE 的一阶近似）：</p>
+    <div class="eq hero-eq"><span class="body">â<sub>1</sub> = a<sub>t</sub> <span class="op">+</span> v<sub>θ</sub>(s, a<sub>t</sub>, t) · (1 <span class="op">−</span> t)</span><span class="num">(7)</span></div>
+    <p>于是真梯度可用「链式法则」近似为 Q 的梯度乘上去噪映射的 Jacobian <span class="m">J=∂â<sub>1</sub>/∂a<sub>t</sub></span>：</p>
+    <div class="eq"><span class="body">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>1</sub>) ≈ <span class="op">(</span>∂â<sub>1</sub>/∂a<sub>t</sub><span class="op">)</span><sup>⊤</sup> ∇<sub>â<sub>1</sub></sub>Q(s,â<sub>1</sub>)</span><span class="num">(8)</span></div>
+    <p>但论文发现这个 Jacobian 会「不老实」（需要对 <span class="m">v<sub>θ</sub></span> 求导，早期步骤里近似很粗），把它<strong>直接换成单位阵 <span class="m">Ĵ=I</span></strong> 反而更好 —— 这就是 QGF 用的估计器：</p>
+    <div class="eq hero-eq"><span class="body">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>1</sub>) ≈ Ĵ<sup>⊤</sup> ∇<sub>â<sub>1</sub></sub>Q(s,â<sub>1</sub>),&nbsp;&nbsp; Ĵ=I</span><span class="num">(9)</span></div>
+
+    <div class="call key"><b>两个看似「偷懒」的近似，其实都不是妥协：</b>①用<b>一步 Euler</b>代替整条去噪链（对比变体 QGF-chain）—— 反而更会「挑 mode」；②<b>丢掉 Jacobian</b>（对比变体 QGF-Jacobian）—— 方差更低、对输入噪声更不敏感（Fig 3）。论文分析显示，QGF 的梯度<b>方差最低、抗噪最强</b>，因此是最好的「Q 值优化器」（Fig 4）。</div>
+
+    <!-- custom schematic: one guided denoising step -->
+    <div class="schematic reveal" role="img" aria-label="QGF 单步引导去噪示意：在 a_t 处，BC 速度 v_bc 与在近似干净动作 â_1 上求得的价值梯度相加，得到指向更高 Q 的引导速度。">
+      <svg viewBox="0 0 720 260" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="sc-inkf"/></marker>
+          <marker id="ac" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="sc-accf"/></marker>
+          <marker id="at" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="sc-tealf"/></marker>
+        </defs>
+        <!-- Q contours around optimal action -->
+        <ellipse cx="612" cy="96" rx="86" ry="70" class="sc-ring" stroke-width="1"/>
+        <ellipse cx="612" cy="96" rx="58" ry="47" class="sc-ring" stroke-width="1"/>
+        <ellipse cx="612" cy="96" rx="31" ry="25" class="sc-ring" stroke-width="1"/>
+        <text x="612" y="100" text-anchor="middle" class="sc-cap sc-mut">Q(s,·)</text>
+        <text x="612" y="30" text-anchor="middle" class="sc-cap sc-mut" style="letter-spacing:.02em">high value</text>
+        <!-- noise cloud -->
+        <circle cx="70" cy="150" r="4" class="sc-inkf" opacity=".5"/>
+        <text x="70" y="182" text-anchor="middle" class="sc-lbl sc-mut">a<tspan baseline-shift="sub" font-size="10">0</tspan> ~ 𝒩</text>
+        <!-- flow path so far -->
+        <path d="M70 150 C 150 120, 190 118, 232 120" class="sc-ink" stroke-width="1.6" fill="none" stroke-dasharray="1 6" stroke-linecap="round"/>
+        <!-- a_t point -->
+        <circle cx="232" cy="120" r="5.5" class="sc-inkf"/>
+        <text x="232" y="146" text-anchor="middle" class="sc-lbl sc-inkf">a<tspan baseline-shift="sub" font-size="10">t</tspan></text>
+        <!-- v_bc velocity -->
+        <line x1="232" y1="120" x2="335" y2="110" class="sc-ink" stroke-width="2.4" marker-end="url(#ah)"/>
+        <text x="284" y="98" text-anchor="middle" class="sc-lbl sc-mut">v<tspan baseline-shift="sub" font-size="10">bc</tspan></text>
+        <!-- single big euler step (dashed) to â1 -->
+        <path d="M232 120 L 560 100" class="sc-acc" stroke-width="1.6" fill="none" stroke-dasharray="7 5" marker-end="url(#ac)"/>
+        <text x="430" y="128" text-anchor="middle" class="sc-lbl sc-accf">(1−t)·v<tspan baseline-shift="sub" font-size="10">bc</tspan></text>
+        <text x="430" y="146" text-anchor="middle" class="sc-cap sc-accf">one euler step → â₁ (Eq 7)</text>
+        <!-- â1 point on contours -->
+        <circle cx="560" cy="100" r="5.5" class="sc-accf"/>
+        <text x="566" y="90" class="sc-lbl sc-accf">â<tspan baseline-shift="sub" font-size="10">1</tspan></text>
+        <!-- ∇Q at â1 (teal), pointing toward center -->
+        <line x1="560" y1="100" x2="600" y2="98" class="sc-teal" stroke-width="2.6" marker-end="url(#at)"/>
+        <text x="583" y="76" text-anchor="middle" class="sc-lbl sc-tealf">∇<tspan baseline-shift="sub" font-size="10">â₁</tspan>Q</text>
+        <!-- resulting guided velocity from a_t (teal), nudged upward toward Q -->
+        <line x1="232" y1="120" x2="352" y2="82" class="sc-teal" stroke-width="2.6" marker-end="url(#at)"/>
+        <text x="300" y="66" text-anchor="middle" class="sc-lbl sc-tealf">v<tspan baseline-shift="sub" font-size="10">bc</tspan> + (1/β)·g</text>
+        <!-- next point a_{t+δ} -->
+        <circle cx="352" cy="82" r="4.5" class="sc-tealf"/>
+        <text x="352" y="70" text-anchor="middle" class="sc-lbl sc-tealf" opacity="0"> </text>
+        <text x="366" y="86" class="sc-lbl sc-tealf">a<tspan baseline-shift="sub" font-size="10">t+δ</tspan></text>
+      </svg>
+      <figcaption style="margin-top:14px">QGF 的一步引导：在 <span class="m">a<sub>t</sub></span> 处，参考策略给出 BC 速度 <span class="m">v<sub>bc</sub></span>（灰）。先沿它走一步大 Euler 得到近似干净动作 <span class="m">â<sub>1</sub></span>（蓝虚线），只在这里求价值梯度 <span class="m">g=∇<sub>â<sub>1</sub></sub>Q</span>（青）。最终引导速度 = <span class="m">v<sub>bc</sub> + (1/β)·g</span>，把下一点 <span class="m">a<sub>t+δ</sub></span> 往高 Q 方向抬。</figcaption>
+    </div>
+
+    <div class="algo">
+      <div class="cap"><span class="lbl">Algorithm 1</span> QGF 推理（去噪时引导）</div>
+      <ol>
+        <li><span class="cm">输入：状态 <span class="mono">s</span>，参考速度场 <span class="mono">v<sub>θ</sub></span>，价值 <span class="mono">Q</span>，引导权重 <span class="mono">1/β</span>，步长 <span class="mono">δ=1/T</span></span></li>
+        <li><span class="mono">a<sub>0</sub></span> ← 𝒩(0, I)</li>
+        <li><span class="kwd">for</span> <span class="mono">t = 0, δ, 2δ, …, 1−δ</span> <span class="kwd">do</span></li>
+        <li>&nbsp;&nbsp;&nbsp;<span class="mono">â<sub>1</sub></span> ← <span class="mono">a<sub>t</sub> + (1−t)·v<sub>θ</sub>(s, a<sub>t</sub>, t)</span> &nbsp;<span class="cm">// 一步 Euler 估计干净动作</span></li>
+        <li>&nbsp;&nbsp;&nbsp;<span class="mono">g</span> ← <span class="mono">∇<sub>â<sub>1</sub></sub> Q(s, â<sub>1</sub>)</span> &nbsp;<span class="cm">// QGF 梯度估计（Ĵ=I）</span></li>
+        <li>&nbsp;&nbsp;&nbsp;<span class="mono">a<sub>t+δ</sub></span> ← <span class="mono">a<sub>t</sub> + δ·( v<sub>θ</sub>(s, a<sub>t</sub>, t) + (1/β)·g )</span> &nbsp;<span class="cm">// Q 引导</span></li>
+        <li><span class="kwd">end for</span></li>
+        <li><span class="kwd">return</span> <span class="mono">a<sub>1</sub></span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 代码对照 ============================ -->
+<section id="code">
+  <div class="wrap wide reveal">
+    <div class="eyebrow">Algorithm ↔ Code · 逐行对照</div>
+    <h2 class="sec">算法落到这份代码里</h2>
+    <p style="max-width:var(--measure)">全部核心逻辑都在 <a href="https://github.com/zhouzypaul/qgf/blob/main/agents/qgf.py"><code>agents/qgf.py</code></a>（JAX / Flax）。下面按「训练（解耦的监督损失）→ 推理（引导去噪）」的顺序，把论文的式子逐行对到代码。行号与仓库一致。</p>
+  </div>
+
+  <!-- === Training === -->
+  <div class="wrap reveal">
+    <h3>训练 · 三个互不耦合的监督目标</h3>
+    <p>训练里没有任何「actor 追 critic」的环节。三条损失各自独立求梯度：flow-matching BC、IQL 的 Q、IQL 的 V。</p>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="pair">
+      <div class="side">
+        <h4>① 流匹配行为克隆 · <span class="m">ℒ<sub>FM</sub></span>（式 2）</h4>
+        <p class="lead">采样噪声 <span class="m">a<sub>0</sub></span> 与时间 <span class="m">t</span>，做线性插值 <span class="m">a<sub>t</sub></span>，让网络回归目标速度 <span class="m">a<sub>1</sub>−a<sub>0</sub></span>。纯监督，梯度里<strong>没有 Q</strong>。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">policy_loss</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">68</span><span class="c">a0 = jax.random.normal(eps_rng, a1.shape)</span></div>
+<div class="row"><span class="n">69</span><span class="c">t = jax.random.randint(</span></div>
+<div class="row el"><span class="n">70</span><span class="c">    time_rng, (a1.shape[0],), 0, denoise_steps+1</span></div>
+<div class="row"><span class="n">74</span><span class="c">) / self.config["denoise_steps"]</span></div>
+<div class="row hl"><span class="n">76</span><span class="c">a_t = a0 * (1 - tv) + a1 * tv   <span class="cmt"># x_t=(1−t)x0+t·x1</span></span></div>
+<div class="row hl"><span class="n">77</span><span class="c">vel = a1 - a0                   <span class="cmt"># 目标速度</span></span></div>
+<div class="row"><span class="n">79</span><span class="c">pred_vel = self.policy(obs, a_t, t, ...)</span></div>
+<div class="row hl"><span class="n">80</span><span class="c">bc_loss = jnp.mean((vel - pred_vel)**2)</span></div>
+</pre></div>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div class="side">
+        <h4>② IQL critic + value · in-sample</h4>
+        <p class="lead"><b>Q</b> 用 n-step TD 目标 <span class="m">r + γ<sup>H</sup>·mask·V(s′)</span>（价值来自 <span class="m">V</span>，不是 <span class="m">Q</span>）。<b>V</b> 只用<strong>数据集里的动作</strong>做 expectile 回归 —— 从不采样策略，价值学习与策略彻底解耦。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">critic_loss · value_loss</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">89</span><span class="c">next_v = self.value(next_obs)</span></div>
+<div class="row hl"><span class="n">90</span><span class="c">target_q = rewards + (discount**H)*masks*next_v</span></div>
+<div class="row"><span class="n">91</span><span class="c">qs = self.critic(obs, batch_actions, ...)</span></div>
+<div class="row"><span class="n">92</span><span class="c">critic_loss = ((qs - target_q)**2 * valid_w).mean()</span></div>
+<div class="row el"><span class="n">..</span><span class="c">                                        </span></div>
+<div class="row hl"><span class="n">99</span><span class="c">qs = self.target_critic(obs, batch_actions) <span class="cmt"># 数据集动作</span></span></div>
+<div class="row"><span class="n">100</span><span class="c">q = self._aggregate_q(qs)               <span class="cmt"># min over 2 Q</span></span></div>
+<div class="row hl"><span class="n">102</span><span class="c">value_loss = expectile_loss(q - v, 0.9)*valid_w</span></div>
+</pre></div>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div class="side">
+        <h4>③ 更新 · 三路独立 + Polyak</h4>
+        <p class="lead">policy、critic、value 各自 <span class="m">apply_loss_fn</span> 独立更新，target critic 用 <span class="m">τ=0.005</span> 做软更新。<strong>actor 的梯度里根本没有 Q</strong> —— 这就是「test-time RL」得以稳定、可扩展的根。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">update</span></div>
+        <div class="body"><pre>
+<div class="row hl"><span class="n">132</span><span class="c">new_policy, _ = self.policy.apply_loss_fn(policy_loss)</span></div>
+<div class="row"><span class="n">135</span><span class="c">new_critic, _ = self.critic.apply_loss_fn(critic_loss)</span></div>
+<div class="row"><span class="n">138</span><span class="c">new_target_critic = target_update(</span></div>
+<div class="row"><span class="n">139</span><span class="c">    self.critic, self.target_critic, tau)   <span class="cmt"># Polyak</span></span></div>
+<div class="row"><span class="n">141</span><span class="c">new_value, _ = self.value.apply_loss_fn(value_loss)</span></div>
+</pre></div>
+      </div>
+    </div>
+
+    <div class="call note">解耦的好处在实验里很直接：训练目标始终是稳定的监督信号，所以<b>模型越大越受益</b>（Fig 9，0.8M→3.2M 参数近 4× 提升），而对照的 train-time 方法 QAM 同样放大模型却不涨甚至过拟合。</div>
+  </div>
+
+  <!-- === Inference === -->
+  <div class="wrap reveal">
+    <h3>推理 · 引导去噪（<code>sample_actions</code> 是全篇的心脏）</h3>
+    <p>下面这段 <span class="m">jax.lax.scan</span> 的循环体 <code>step</code>，就是 Algorithm 1 逐行的实现。</p>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="code">
+      <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">sample_actions · step()</span></div>
+      <div class="body"><pre>
+<div class="row"><span class="n">181</span><span class="c">a = jax.random.normal(seed, (B, full_action_dim)) <span class="cmt"># a0 ~ 𝒩(0,I)</span></span></div>
+<div class="row"><span class="n">182</span><span class="c">dt = 1.0 / self.config["denoise_steps"]           <span class="cmt"># δ = 1/T</span></span></div>
+<div class="row"><span class="n">187</span><span class="c">def step(a, t_idx):                               <span class="cmt"># scan 的循环体</span></span></div>
+<div class="row hl"><span class="n">191</span><span class="c">    v_bc = self.policy(observations, a, ti)       <span class="cmt"># 参考速度 v_θ(s,a_t,t)</span></span></div>
+<div class="row"><span class="n">198</span><span class="c">    elif denoised_action_approx == <span class="st">"one_euler_step_approx"</span>:</span></div>
+<div class="row hlt"><span class="n">199</span><span class="c">        v_bc_sg = jax.lax.stop_gradient(v_bc)     <span class="cmt"># ① 截断①</span></span></div>
+<div class="row hlt"><span class="n">200</span><span class="c">        a_approx = jnp.clip(a + (1-tv)*v_bc_sg, -1, 1) <span class="cmt"># â₁ 一步 Euler (式7)</span></span></div>
+<div class="row"><span class="n">206</span><span class="c">    def q_fn(a):</span></div>
+<div class="row"><span class="n">207</span><span class="c">        return self._aggregate_q(self.target_critic(obs, a)).sum()</span></div>
+<div class="row hlt"><span class="n">209</span><span class="c">    qgrad = jax.grad(q_fn)(jax.lax.stop_gradient(a_approx)) <span class="cmt"># ② g=∇Q, Ĵ=I (式9)</span></span></div>
+<div class="row hl"><span class="n">225</span><span class="c">    return a + (v_bc + guidance_weight*qgrad)*dt, None <span class="cmt"># a_{t+δ} 引导更新</span></span></div>
+<div class="row"><span class="n">227</span><span class="c">actions, _ = jax.lax.scan(step, a, jnp.arange(denoise_steps)) <span class="cmt"># 跑满 T 步</span></span></div>
+</pre></div>
+    </div>
+
+    <div class="call key"><b>最漂亮的一处细节 —— 「丢掉 Jacobian（<span class="m">Ĵ=I</span>）」不是一个单独的代码分支，而是两处 <code>stop_gradient</code> 的自然结果：</b>第 <b>199</b> 行把 <span class="m">v<sub>bc</sub></span> 截断，第 <b>209</b> 行又对 <code>a_approx</code> 截断后才求 <code>jax.grad</code>。于是 <span class="m">â<sub>1</sub></span> 对 <span class="m">a<sub>t</sub></span> 的依赖被彻底切断，<code>qgrad</code> 就是纯粹在 <span class="m">â<sub>1</sub></span> 处的 <span class="m">∇<sub>â<sub>1</sub></sub>Q</span> —— 精确对应式 (9)。</div>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="pair">
+      <div class="side">
+        <h4>想要 Jacobian？打开 <span class="m">apply_jacobian</span> 即可（式 8）</h4>
+        <p class="lead">这条分支<strong>不</strong>截断速度：用 <span class="m">jacrev</span> 求出去噪映射的 Jacobian <span class="m">J=∂â<sub>1</sub>/∂a<sub>t</sub></span>，再 <span class="m">Ĵ<sup>⊤</sup>∇Q</span>。这就是论文里的 <b>QGF-Jacobian</b> 变体 —— 对噪声更敏感、更差（Fig 3/4/8），所以默认关。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">apply_jacobian 分支</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">214</span><span class="c">if apply_jacobian:</span></div>
+<div class="row"><span class="n">217</span><span class="c">    def map_single(a_i, obs_i, tv_i):</span></div>
+<div class="row hl"><span class="n">218</span><span class="c">        v = self.policy(obs_i[None], a_i[None], tv_i)[0] <span class="cmt"># 不截断</span></span></div>
+<div class="row"><span class="n">219</span><span class="c">        return jnp.clip(a_i + (1-tv_i[0])*v, -1, 1)</span></div>
+<div class="row hl"><span class="n">221</span><span class="c">    jac = vmap(jacrev(map_single))(a, obs, tv) <span class="cmt"># J=∂â₁/∂a_t</span></span></div>
+<div class="row hl"><span class="n">223</span><span class="c">    qgrad = jnp.einsum("bi,bij->bj", qgrad, jac) <span class="cmt"># Ĵ⊤∇Q (式8)</span></span></div>
+</pre></div>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div class="side">
+        <h4>叠加 best-of-N（QGF+BFN，Fig 7）</h4>
+        <p class="lead">同一状态复制 <span class="m">N</span> 份、各自引导去噪，最后按 Q 取最优。<span class="m">N=1</span> 就是纯 QGF；调大 <span class="m">N</span> 就是用更多测试算力换性能。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">rejection_sampling</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">235</span><span class="c">if rejection_sampling > 1:</span></div>
+<div class="row"><span class="n">236</span><span class="c">    q = self._aggregate_q(self.target_critic(obs, actions))</span></div>
+<div class="row hl"><span class="n">241</span><span class="c">    actions = actions[arange(B), jnp.argmax(q, axis=1)] <span class="cmt"># best-of-N</span></span></div>
+</pre></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === Networks & config === -->
+  <div class="wrap reveal">
+    <h3>网络与关键超参</h3>
+    <p>速度场是一个 MLP：拼接 <span class="m">[obs, a<sub>t</sub>, 时间嵌入]</span> 过 MLP 再输出速度；Q/V 是带 ensemble 的 MLP（<code>utils/networks.py</code>）。所有 QGF 行为都由这几个开关决定（<code>agents/qgf.py:328–366</code>）：</p>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="pair">
+      <div class="side">
+        <h4><span class="m">ActorFlowField</span> · 速度场</h4>
+        <p class="lead">时间用正弦嵌入（<code>networks.py:110</code>），拼接后过带 LayerNorm 的 GELU-MLP，末层 Dense 输出维度 = 动作维（chunking 时 = <span class="m">H×</span>动作维）。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">utils/networks.py</span><span class="tag">ActorFlowField</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">160</span><span class="c">parts = [obs, noised_action]</span></div>
+<div class="row hl"><span class="n">162</span><span class="c">    parts.append(embed_time(t, self.time_embedding))</span></div>
+<div class="row"><span class="n">164</span><span class="c">concat_input = jnp.concatenate(parts, axis=-1)</span></div>
+<div class="row"><span class="n">165</span><span class="c">outputs = MLP(hidden_dims, activate_final=True, ...)(concat_input)</span></div>
+<div class="row hl"><span class="n">168</span><span class="c">v = nn.Dense(self.action_dim)(outputs)   <span class="cmt"># 速度</span></span></div>
+</pre></div>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div class="side">
+        <h4>配置开关 · QGF vs 变体</h4>
+        <p class="lead"><code>denoised_action_approx</code> 与 <code>apply_jacobian</code> 两个开关，就能在 <b>QGF</b> / <b>QGF-Jacobian</b> / <b>QFQL（noisy）</b> 之间切换 —— 同一份代码复现论文里的多条曲线。</p>
+      </div>
+      <div class="code">
+        <div class="head"><span class="dot"></span><span class="file">agents/qgf.py</span><span class="tag">get_config()</span></div>
+        <div class="body"><pre>
+<div class="row"><span class="n">350</span><span class="c">q_aggregation = <span class="st">"min"</span>     <span class="cmt"># clipped double-Q</span></span></div>
+<div class="row"><span class="n">352</span><span class="c">expectile = 0.9           <span class="cmt"># IQL expectile τ</span></span></div>
+<div class="row"><span class="n">354</span><span class="c">denoise_steps = 10        <span class="cmt"># 去噪步数 T</span></span></div>
+<div class="row hlt"><span class="n">359</span><span class="c">denoised_action_approx = <span class="st">"one_euler_step_approx"</span></span></div>
+<div class="row hlt"><span class="n">363</span><span class="c">apply_jacobian = False    <span class="cmt"># QGF 默认丢 Jacobian</span></span></div>
+</pre></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 怎么跑 ============================ -->
+<section id="run">
+  <div class="wrap wide reveal">
+    <div class="eyebrow">Repo Map · How to Run</div>
+    <h2 class="sec">仓库结构与运行方式</h2>
+  </div>
+
+  <div class="wrap reveal">
+    <p>所有实验都从 <code>main.py</code> 启动，用 <code>--agent=agents/&lt;agent&gt;.py</code> 选算法、<code>--agent.&lt;key&gt;=&lt;value&gt;</code> 覆盖超参。环境来自 <a href="https://github.com/seohongpark/ogbench">OGBench</a> 的操作任务（cube / puzzle / scene）。</p>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="tree">
+<span class="star">agents/qgf.py</span>        <span class="cm"># ★ QGF：训练损失 + 引导去噪采样（本页主角）</span>
+agents/            <span class="cm"># 对比方法：fql, qam, edp, cfgrl, dsrl, robust_q, iql…</span>
+<span class="d">utils/</span>
+  networks.py      <span class="cm"># ActorFlowField（速度场）、Value（Q/V ensemble）</span>
+  evaluation.py    <span class="cm"># rollout；对 test-time 方法扫描 guidance_weight</span>
+  flax_utils.py    <span class="cm"># TrainState、expectile_loss、target_update（Polyak）</span>
+  datasets.py      <span class="cm"># 序列采样（支持 action chunking / n-step）</span>
+<span class="d">envs/</span>             <span class="cm"># ogbench（论文用）、d4rl / robomimic / exorl（额外支持）</span>
+<span class="d">scripts/</span>          <span class="cm"># 生成 SLURM 批处理，复现全量实验</span>
+main.py            <span class="cm"># 训练 / 评估 / 在线微调 的统一入口</span>
+    </div>
+  </div>
+
+  <div class="wrap reveal">
+    <h3>跑一个 QGF 实验</h3>
+    <p>README 里的例子（<code>cube-triple</code> 单任务，100M 数据集，动作分块 <span class="m">H=5</span>）：</p>
+  </div>
+
+  <div class="wrap wide reveal">
+    <div class="code">
+      <div class="head"><span class="dot"></span><span class="file">bash</span><span class="tag">QGF (our method)</span></div>
+      <div class="body"><pre>
+<div class="row"><span class="n">1</span><span class="c">MUJOCO_GL=egl python main.py \</span></div>
+<div class="row"><span class="n">2</span><span class="c">  --agent=agents/qgf.py \</span></div>
+<div class="row hlt"><span class="n">3</span><span class="c">  --agent.denoised_action_approx=one_euler_step_approx \</span></div>
+<div class="row hlt"><span class="n">4</span><span class="c">  --agent.apply_jacobian=False \</span></div>
+<div class="row"><span class="n">5</span><span class="c">  --agent.action_chunking=True  --agent.horizon_length=5 \</span></div>
+<div class="row"><span class="n">6</span><span class="c">  --env_name=cube-triple-play-singletask-task1-v0 \</span></div>
+<div class="row"><span class="n">7</span><span class="c">  --ogbench_dataset_dir=$OGBENCH_DATA_DIR/cube-triple-play-100m-v0/ \</span></div>
+<div class="row hl"><span class="n">8</span><span class="c">  --guidance_weights=0.004,0.008,0.01,0.02,0.04,0.06,0.08,0.1,0.12</span></div>
+</pre></div>
+    </div>
+
+    <div class="call note"><b>关于 <code>--guidance_weights</code>：</b>它一次性列出所有要试的引导权重 <span class="m">1/β</span>。评估时，<code>eval_with_test_time_guidance</code>（<code>utils/evaluation.py:381</code>）对每个权重各跑一遍 rollout，把不同权重的成功率分别记录，并<strong>取最优的那一档</strong>作为该方法的成绩。因为引导只发生在<strong>推理</strong>，扫权重不需要重新训练 —— 这正是 test-time RL「一次训练、按需调优」的便利。</div>
+  </div>
+
+  <div class="wrap reveal">
+    <p style="color:var(--muted); font-size:.94rem">若想在同一个 BC+IQL 底座上对比多种 test-time 方法（QFQL、BPTT、RobustQ、GradStep），先跑 <code>scripts/bc_iql_train.py</code> 训练底座，再跑对应的 <code>scripts/exp_*_test_time_eval.py</code>；train-time 方法（FQL、EDP、QAM…）则各自独立训练。细节见 README。</p>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 结果 ============================ -->
+<section id="results">
+  <div class="wrap wide reveal">
+    <div class="eyebrow">Empirical Results</div>
+    <h2 class="sec">实验说了什么</h2>
+    <p style="max-width:var(--measure)">在 OGBench 的长时序操作任务上（单任务 20 个 / goal-conditioned 25 个，多 seed）：</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="fig">Fig 5</div>
+        <div class="stat">胜过全部 test-time</div>
+        <p>QGF 打败所有基于梯度的 test-time 方法（QFQL / BPTT / RobustQ），并与最强的 train-time 方法 EDP 持平甚至略优。</p>
+      </div>
+      <div class="card">
+        <div class="fig">Fig 6</div>
+        <div class="stat">≈ 100×</div>
+        <p>每个动作的算力：QGF ≈ 0.0013 GFLOPs，best-of-N（N=16）≈ 0.146 —— 便宜约两个数量级。</p>
+      </div>
+      <div class="card">
+        <div class="fig">Fig 7</div>
+        <div class="stat">QGF + BFN</div>
+        <p>叠加 best-of-N 后，QGF+BFN(N=4) 用更少的测试算力追平 BFN(N=16)。</p>
+      </div>
+      <div class="card">
+        <div class="fig">Fig 8</div>
+        <div class="stat">越难越强</div>
+        <p>goal-conditioned 设定下，任务越难、时序越长，QGF 相对优势越大（仅在最简单的 p45 略逊 QFQL）。</p>
+      </div>
+      <div class="card">
+        <div class="fig">Fig 9</div>
+        <div class="stat">≈ 4× ↑</div>
+        <p>模型 0.8M→3.2M 参数，QGF 性能近 4 倍提升；对照的 QAM 放大模型却不涨。可扩展性来自解耦的稳定训练。</p>
+      </div>
+      <div class="card">
+        <div class="fig">Fig 10</div>
+        <div class="stat">critic 越好越强</div>
+        <p>把 IQL 的 Q 换成更强的 QAM Q，QGF 进一步变强 —— 它是一个通用、即插即用的 policy extraction。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap reveal">
+    <div class="eyebrow" style="margin-top:20px">Why It Works</div>
+    <h2 class="sec">为什么有效 · 要点</h2>
+    <ul class="clean">
+      <li><strong>不查 OOD：</strong>Q 的梯度只在「近似干净动作」<span class="m">â<sub>1</sub></span> 上求，避开在带噪动作 <span class="m">a<sub>t</sub></span> 上外推（对比 QFQL 的式 5）。</li>
+      <li><strong>不做 BPTT：</strong>一步 Euler 近似代替整条去噪链，便宜、稳定，且方差最低（对比式 6 的 BPTT，Fig 3）。</li>
+      <li><strong>两个「粗糙」近似反而更好：</strong>一步 Euler（更会挑 mode）+ 丢弃 Jacobian（更低方差、更抗噪）。</li>
+      <li><strong>解耦训练：</strong>只训 BC + IQL 两个稳定监督目标，actor 永不追逐会变的 critic → 更稳、随模型增大更受益。</li>
+      <li><strong>便宜且可叠加：</strong>比 best-of-N 省数量级算力，还能叠 BFN 进一步提升；critic 越强 QGF 越强。</li>
+    </ul>
+    <div class="call key"><b>一句话总结：</b>QGF 说明「基于梯度的 test-time RL」是把表达力强的生成式策略用于连续控制的一条<b>稳定、可扩展、好上手</b>的路 —— 把不稳定的 actor-critic 优化，换成一个训练时纯监督、推理时轻量引导的方案。</div>
+  </div>
+</section>
+
+<!-- ============================ FOOTER ============================ -->
+<footer>
+  <div class="wrap wide">
+    <p style="color:var(--ink); font-weight:600; margin-bottom:.3em">引用 · BibTeX</p>
+    <div class="cite">@article{zhou2026qgf,
+  title   = {Test-Time Gradient Guidance of Flow Policies in Reinforcement Learning},
+  author  = {Zhou, Zhiyuan and Peng, Andy and Xu, Charles and Li, Qiyang and
+             Springenberg, Jost Tobias and Frans, Kevin and Levine, Sergey},
+  year    = {2026},
+  journal = {arXiv preprint arXiv:2606.11087},
+}</div>
+    <p>
+      <a href="https://arxiv.org/pdf/2606.11087" target="_blank" rel="noopener">论文</a> &nbsp;·&nbsp;
+      <a href="https://q-guided-flow.github.io/" target="_blank" rel="noopener">项目主页</a> &nbsp;·&nbsp;
+      <a href="https://github.com/zhouzypaul/qgf" target="_blank" rel="noopener">代码仓库</a> &nbsp;·&nbsp;
+      <a href="./paper.pdf">本地 PDF</a>
+    </p>
+    <p style="font-size:.82rem; color:var(--faint); margin-top:1em">
+      本页为对仓库 <code>zhouzypaul/qgf</code> 与其论文的解读，所有行号与引用对应当前 <code>main</code> 分支代码。<br />
+      <code>docs/paper.pdf</code> 为本地下载的论文副本，已在 <code>.gitignore</code> 中排除、不纳入版本库。
+    </p>
+  </div>
+</footer>
+
+<script>
+  // theme toggle (persist choice)
+  (function () {
+    var root = document.documentElement;
+    try {
+      var saved = localStorage.getItem("qgf-theme");
+      if (saved) root.setAttribute("data-theme", saved);
+    } catch (e) {}
+    document.getElementById("themeBtn").addEventListener("click", function () {
+      var cur = root.getAttribute("data-theme");
+      var isDark = cur ? cur === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var next = isDark ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("qgf-theme", next); } catch (e) {}
+    });
+  })();
+
+  // reveal on scroll
+  (function () {
+    var els = document.querySelectorAll(".reveal");
+    if (!("IntersectionObserver" in window) ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      els.forEach(function (el) { el.classList.add("in"); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.06 });
+    els.forEach(function (el) { io.observe(el); });
+  })();
+</script>
