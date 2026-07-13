@@ -9,7 +9,11 @@
 #   $OGBENCH_DATA_DIR/<env>-100m-v0/<env>-v0-000.npz ...
 #
 # Usage:
-#   ./download_ogbench.sh [options] <env> [<env> ...]
+#   ./download_ogbench.sh [options] [<env> ...]
+#
+# With no <env> given, downloads only the environments THIS REPO uses
+# (DEFAULT_ENVS below): cube-triple-play, cube-quadruple-play, puzzle-4x4-play,
+# scene-play — the four env types looped over by every scripts/exp_*.py.
 #
 # Options:
 #   -n N        download slices 0..N-1 (train + val).           (default: 5)
@@ -20,9 +24,10 @@
 #   -h          show this help.
 #
 # Examples:
-#   ./download_ogbench.sh cube-triple-play                 # first 5 slices
+#   ./download_ogbench.sh                                  # 4 repo envs, first 5 slices
+#   ./download_ogbench.sh -a                               # 4 repo envs, everything
+#   ./download_ogbench.sh cube-triple-play                 # one env, first 5 slices
 #   ./download_ogbench.sh -n 10 puzzle-4x4-play scene-play # first 10 slices, 2 envs
-#   ./download_ogbench.sh -a cube-triple-play              # everything
 #
 # Downloads resume where they left off (wget -c) — safe to re-run.
 
@@ -45,16 +50,33 @@ KNOWN_ENVS=(
   humanoidmaze-giant-navigate
 )
 
+# Environments actually used by this repo (every scripts/exp_*.py loops over
+# these four env types). Used as the default when no <env> is passed.
+DEFAULT_ENVS=(
+  cube-triple-play
+  cube-quadruple-play
+  puzzle-4x4-play
+  scene-play
+)
+
 NUM_SLICES=5
 ALL=false
 WITH_VAL=true
 DATA_DIR="${OGBENCH_DATA_DIR:-$HOME/.ogbench/data}"
 
-usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+# Print the leading comment block (everything after the shebang up to the first
+# non-comment line) as help text, stripping the leading "# ".
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; }
 
 list_envs() {
-  echo "Known 100M environments:"
-  for e in "${KNOWN_ENVS[@]}"; do echo "  $e"; done
+  echo "Known 100M environments ((*) = used by this repo, downloaded by default):"
+  for e in "${KNOWN_ENVS[@]}"; do
+    if printf '%s\n' "${DEFAULT_ENVS[@]}" | grep -qx "$e"; then
+      echo "  (*) $e"
+    else
+      echo "      $e"
+    fi
+  done
 }
 
 # ---- parse args ----------------------------------------------------------
@@ -73,12 +95,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#ENVS[@]} -eq 0 ]]; then
-  echo "Error: no environment specified." >&2
-  echo >&2
-  list_envs >&2
-  echo >&2
-  usage >&2
-  exit 1
+  ENVS=("${DEFAULT_ENVS[@]}")
+  echo "No environment given; defaulting to the ${#ENVS[@]} envs used by this repo:"
+  echo "  ${ENVS[*]}"
 fi
 
 command -v wget >/dev/null 2>&1 || { echo "Error: wget is required but not found." >&2; exit 1; }
