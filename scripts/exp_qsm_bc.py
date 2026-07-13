@@ -54,7 +54,7 @@ for debug in [True, False]:
     if debug:
         gen.add_common_prefix(
             {
-                "wandb_run_group": run_group + "_debug",
+                "run_group": run_group + "_debug",
                 "offline_steps": 10_000,
                 "online_steps": 0,
                 "eval_episodes": 1,
@@ -64,7 +64,7 @@ for debug in [True, False]:
     else:
         gen.add_common_prefix(
             {
-                "wandb_run_group": run_group,
+                "run_group": run_group,
                 "online_steps": 0,
                 "offline_steps": OFFLINE_STEPS,
                 "eval_episodes": 30,

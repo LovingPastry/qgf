@@ -16,7 +16,7 @@ run_group = "grad_step"
 TRAIN_RUN_GROUP = os.environ.get("TRAIN_RUN_GROUP", "qgf")
 RESTORE_EPOCH = 500_000
 SAVE_DIR = "exp"
-SAVE_WANDB_PROJECT_DIR = "qgf"
+SAVE_TB_PROJECT_DIR = "qgf"
 
 num_jobs_per_gpu = 2
 
@@ -49,12 +49,12 @@ def env_dir_name(env_name):
     return f"{prefix}-100m-{ver}"
 
 
-def find_qgf_checkpoint(env_name, seed, run_group, save_dir, wandb_project, epoch):
+def find_qgf_checkpoint(env_name, seed, run_group, save_dir, tb_project, epoch):
     """Return a glob pattern that locates the QGF checkpoint for (env_name, seed)."""
     env_short = re.sub(r"-(singletask|v0|v1|v2)", "", env_name)
     pattern = os.path.join(
         save_dir,
-        wandb_project,
+        tb_project,
         run_group,
         f"{run_group}_qgf_{env_short}_seed{seed:02d}_*",
     )
@@ -79,7 +79,7 @@ for debug in [True, False]:
     if debug:
         gen.add_common_prefix(
             {
-                "wandb_run_group": run_group + "_debug",
+                "run_group": run_group + "_debug",
                 "eval_episodes": 1,
                 "offline_steps": 0,
                 "online_steps": 0,
@@ -88,7 +88,7 @@ for debug in [True, False]:
     else:
         gen.add_common_prefix(
             {
-                "wandb_run_group": run_group,
+                "run_group": run_group,
                 "eval_episodes": 30,
                 "offline_steps": 0,
                 "online_steps": 0,
@@ -108,7 +108,7 @@ for debug in [True, False]:
                     seed,
                     run_group=TRAIN_RUN_GROUP,
                     save_dir=SAVE_DIR,
-                    wandb_project=SAVE_WANDB_PROJECT_DIR,
+                    tb_project=SAVE_TB_PROJECT_DIR,
                     epoch=RESTORE_EPOCH,
                 )
             except FileNotFoundError as e:

@@ -14,7 +14,6 @@ import gymnasium as gym
 import jax
 import numpy as np
 import tqdm
-import wandb
 from absl import app, flags
 from agents import agents
 from envs.env_utils import make_env_and_datasets
@@ -23,16 +22,24 @@ from ml_collections import config_flags
 from utils.datasets import Dataset, ReplayBuffer, load_replay_buffer
 from utils.evaluation import eval_standard, eval_with_test_time_guidance, flatten
 from utils.flax_utils import restore_agent, save_agent
-from utils.log_utils import CsvLogger, get_flag_dict, get_wandb_video, setup_wandb
+from utils.log_utils import (
+    CsvLogger,
+    get_flag_dict,
+    get_tensorboard_video,
+    log_scalars,
+    setup_tensorboard,
+)
 
 FLAGS = flags.FLAGS
 
 
-# wandb options
-flags.DEFINE_string("wandb_run_group", "Debug", "Run group.")
-flags.DEFINE_string("wandb_project", "qgf", "Wandb project name.")
-flags.DEFINE_boolean("wandb_offline", False, "Whether to run wandb in offline mode.")
-flags.DEFINE_multi_string("wandb_tags", None, "Wandb tags.")
+# tensorboard / logging options
+flags.DEFINE_string(
+    "run_group", "Debug", "Run group (used for grouping runs and as a subdirectory)."
+)
+flags.DEFINE_string(
+    "tb_project", "qgf", "Project name (top-level subdirectory under save_dir)."
+)
 
 # experiment
 flags.DEFINE_boolean("debug", False, "Whether to run in debug mode.")
@@ -139,9 +146,9 @@ def _setup_experiment(config):
     agent_name = config["agent_name"]
     env_short = re.sub(r"-(singletask|v0|v1|v2)", "", FLAGS.env_name)
     exp_hash = hashlib.sha256(json.dumps(config.to_dict()).encode()).hexdigest()[:8]
-    exp_name = f"{FLAGS.wandb_run_group}_{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{exp_hash}"
+    exp_name = f"{FLAGS.run_group}_{agent_name}_{env_short}_seed{FLAGS.seed:02d}_{exp_hash}"
 
-    save_subpath = [FLAGS.wandb_project, FLAGS.wandb_run_group, exp_name]
+    save_subpath = [FLAGS.tb_project, FLAGS.run_group, exp_name]
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, *save_subpath)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
 
@@ -335,16 +342,11 @@ def main(_):
     # Agent
     agent = _setup_agents(config, agent_name, example_batch)
 
-    # Wandb set up
-    run = setup_wandb(
-        project=FLAGS.wandb_project,
-        group=FLAGS.wandb_run_group,
-        tags=FLAGS.wandb_tags,
-        name=exp_name,
+    # TensorBoard set up
+    writer = setup_tensorboard(
+        log_dir=FLAGS.save_dir,
         hyperparam_dict=config.to_dict(),
-        mode="disabled"
-        if FLAGS.debug
-        else ("offline" if FLAGS.wandb_offline else "online"),
+        disabled=FLAGS.debug,
     )
     with open(os.path.join(FLAGS.save_dir, "flags.json"), "w") as f:
         json.dump(get_flag_dict(), f)
@@ -368,11 +370,11 @@ def main(_):
                     for k, v in eval_metrics.items()
                 }
 
-            wandb.log(eval_metrics, step=FLAGS.restore_epoch)
+            log_scalars(writer, eval_metrics, FLAGS.restore_epoch)
             eval_logger.log(eval_metrics, step=FLAGS.restore_epoch)
 
         eval_logger.close()
-        wandb.finish()
+        writer.close()
         return
 
     # Train agent.
@@ -532,7 +534,7 @@ def main(_):
             train_metrics["time/total_time"] = time.time() - first_time
             train_metrics.update(expl_metrics)
             last_time = time.time()
-            wandb.log(train_metrics, step=i)
+            log_scalars(writer, train_metrics, i)
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
@@ -547,8 +549,13 @@ def main(_):
                 )
 
                 if FLAGS.video_episodes > 0:
-                    video = get_wandb_video(renders=renders)
-                    eval_metrics["video"] = video
+                    video = get_tensorboard_video(renders=renders)
+                    video_tag = (
+                        f"best_of_{rejection_sampling}_video"
+                        if rejection_sampling > 1
+                        else "video"
+                    )
+                    writer.add_video(video_tag, video, global_step=i, fps=15)
 
                 if rejection_sampling > 1:
                     eval_metrics = {
@@ -556,7 +563,7 @@ def main(_):
                         for k, v in eval_metrics.items()
                     }
 
-                wandb.log(eval_metrics, step=i)
+                log_scalars(writer, eval_metrics, i)
                 eval_logger.log(eval_metrics, step=i)
 
         # Save agent.
@@ -572,6 +579,7 @@ def main(_):
             replay_buffer.save(FLAGS.save_dir, i)
 
     _finish_training(agent, train_logger, eval_logger, vec_eval_env, i)
+    writer.close()
 
 
 def _close_vec_eval_env(vec_eval_env):

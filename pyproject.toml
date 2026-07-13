@@ -20,9 +20,10 @@ dependencies = [
     "optax",
     "pillow",
     "scipy",
+    "tensorboardX",
+    "moviepy",
     "tqdm",
     "typing-extensions",
-    "wandb",
 ]
 
 [project.optional-dependencies]

@@ -91,7 +91,21 @@ The above is an example command for running on `cube-triple-play-singletask-task
 The `--guidance_weights` flag specifies all the guidance weights to try in a for-loop during policy evaluation,
 and the evaluation statistics (e.g. success rate) for different guidance weights are saved under different keys.
 
-Checkpoints are saved to `exp/qgf/{wandb_run_group}/{exp_name}/params_{step}.pkl`.
+Checkpoints are saved to `exp/qgf/{run_group}/{exp_name}/params_{step}.pkl`.
+
+### Visualization (TensorBoard)
+
+Training/eval metrics and evaluation videos are logged with TensorBoard (via `tensorboardX`)
+into each run's save directory, alongside `train.csv` / `eval.csv`. Launch TensorBoard on the
+parent directory to browse all runs:
+
+```bash
+tensorboard --logdir exp/
+```
+
+Scalars appear on the **SCALARS** tab; rollout videos appear as animations on the **IMAGES**
+tab. Use `--tb_project` (default `qgf`) and `--run_group` to control the `exp/<tb_project>/<run_group>/`
+subdirectory layout.
 
 
 ## Launching full paper experiments (via SLURM)

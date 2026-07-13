@@ -1,5 +1,4 @@
 import os
-import pathlib
 import subprocess
 import tempfile
 from datetime import datetime
@@ -7,8 +6,13 @@ from datetime import datetime
 import absl.flags as flags
 import ml_collections
 import numpy as np
-import wandb
 from PIL import Image, ImageEnhance
+from tensorboardX import SummaryWriter
+
+
+def _is_media(v):
+    """Return True for non-scalar array-like values (e.g. videos) that cannot go in a CSV cell."""
+    return isinstance(v, np.ndarray) and v.ndim > 0
 
 
 class CsvLogger:
@@ -18,29 +22,20 @@ class CsvLogger:
         self.path = path
         self.header = None
         self.file = None
-        self.disallowed_types = (wandb.Image, wandb.Video, wandb.Histogram)
 
     def log(self, row, step):
         row["step"] = step
         if self.file is None:
             self.file = open(self.path, "w")
             if self.header is None:
-                self.header = [
-                    k
-                    for k, v in row.items()
-                    if not isinstance(v, self.disallowed_types)
-                ]
+                self.header = [k for k, v in row.items() if not _is_media(v)]
                 self.file.write(",".join(self.header) + "\n")
-            filtered_row = {
-                k: v for k, v in row.items() if not isinstance(v, self.disallowed_types)
-            }
+            filtered_row = {k: v for k, v in row.items() if not _is_media(v)}
             self.file.write(
                 ",".join([str(filtered_row.get(k, "")) for k in self.header]) + "\n"
             )
         else:
-            filtered_row = {
-                k: v for k, v in row.items() if not isinstance(v, self.disallowed_types)
-            }
+            filtered_row = {k: v for k, v in row.items() if not _is_media(v)}
             self.file.write(
                 ",".join([str(filtered_row.get(k, "")) for k in self.header]) + "\n"
             )
@@ -49,6 +44,21 @@ class CsvLogger:
     def close(self):
         if self.file is not None:
             self.file.close()
+
+
+def log_scalars(writer, metrics, step):
+    """Write all scalar-valued entries of ``metrics`` to TensorBoard.
+
+    Non-scalar values (arrays, videos, strings that are not numbers) are skipped so
+    that only proper scalars land on the SCALARS dashboard.
+    """
+    for k, v in metrics.items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        writer.add_scalar(k, fv, step)
+    writer.flush()
 
 
 def get_exp_name(seed):
@@ -73,57 +83,39 @@ def get_flag_dict():
     return flag_dict
 
 
-def setup_wandb(
-    entity=None,
-    project="project",
-    group=None,
-    name=None,
-    mode="online",
+def setup_tensorboard(
+    log_dir,
     hyperparam_dict=None,
+    disabled=False,
     log_code=False,
-    tags=None,
-    resume_id=None,
-    resume_mode=None,
 ):
-    """Set up Weights & Biases for logging."""
-    wandb_output_dir = tempfile.mkdtemp()
-    if tags is None:
-        tags = [group] if group is not None else None
+    """Set up a TensorBoard ``SummaryWriter`` for logging.
 
-    # Combine flag dict with hyperparameters (similar to utils/wandb.py)
+    Args:
+        log_dir: Directory to write event files to. Point ``tensorboard --logdir`` at
+            its parent to browse all runs.
+        hyperparam_dict: Extra hyperparameters to record alongside the absl flags.
+        disabled: If True (e.g. debug runs), write to a throwaway temp dir so the
+            experiment directory stays clean.
+        log_code: If True, additionally record the current git commit and diff as text.
+
+    Returns:
+        A ``tensorboardX.SummaryWriter``.
+    """
+    if disabled:
+        log_dir = tempfile.mkdtemp()
+    writer = SummaryWriter(logdir=log_dir)
+
+    # Combine flag dict with hyperparameters and record them on the TEXT dashboard.
     config_dict = get_flag_dict()
     if hyperparam_dict is not None:
         config_dict.update(hyperparam_dict)
-
-    init_kwargs = dict(
-        config=config_dict,
-        project=project,
-        entity=entity,
-        tags=tags,
-        group=group,
-        dir=wandb_output_dir,
-        name=name,
-        settings=wandb.Settings(
-            start_method="thread",
-            _disable_stats=False,
-        ),
-        mode=mode,
-        save_code=log_code,
+    config_md = "\n".join(
+        f"- **{k}**: `{config_dict[k]}`" for k in sorted(config_dict, key=str)
     )
-    if resume_id is not None:
-        init_kwargs.update(dict(id=resume_id, resume=resume_mode or "allow"))
-
-    run = wandb.init(**init_kwargs)
+    writer.add_text("config", config_md, 0)
 
     if log_code:
-        run.log_code(
-            root=".",
-            include_fn=lambda p: not any(
-                part in {".git", "__pycache__", ".venv", "exp", ".onager"}
-                for part in pathlib.Path(p).parts
-            ),
-        )
-
         try:
             sha = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
@@ -131,11 +123,9 @@ def setup_wandb(
             diff = subprocess.check_output(["git", "diff"], text=True)
         except Exception:
             sha, diff = "no-git", ""
-        wandb.config.update(
-            {"git_commit": sha, "git_diff": diff}, allow_val_change=True
-        )
+        writer.add_text("git", f"commit: `{sha}`\n\n```\n{diff}\n```", 0)
 
-    return run
+    return writer
 
 
 def reshape_video(v, n_cols=None):
@@ -162,10 +152,12 @@ def reshape_video(v, n_cols=None):
     return v
 
 
-def get_wandb_video(renders=None, n_cols=None, fps=15):
-    """Return a Weights & Biases video.
+def get_tensorboard_video(renders=None, n_cols=None):
+    """Return a video tensor ready for ``SummaryWriter.add_video``.
 
-    It takes a list of videos and reshapes them into a single video with the specified number of columns.
+    It takes a list of videos and reshapes them into a single grid video. The returned
+    array has shape (1, t, c, h, w) and dtype uint8, which TensorBoard renders as an
+    animation on the IMAGES dashboard (viewable in the browser).
 
     Args:
         renders: List of videos. Each video should be a numpy array of shape (t, h, w, c).
@@ -197,4 +189,7 @@ def get_wandb_video(renders=None, n_cols=None, fps=15):
 
     renders = reshape_video(renders, n_cols)  # (t, c, nr * h, nc * w)
 
-    return wandb.Video(renders, fps=fps, format="mp4")
+    # add_video expects (N, T, C, H, W) uint8; add a singleton batch dimension.
+    renders = renders.astype(np.uint8)[None]
+
+    return renders
