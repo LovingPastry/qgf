@@ -39,6 +39,23 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### GPU note (RTX 5090 / Blackwell, `sm_120`)
+
+The pinned JAX stack is `jax[cuda12]==0.6.2` — the first release whose bundled XLA can
+compile for Blackwell (`sm_120`). Older JAX (e.g. 0.4.x) fails at compile time with
+`target 'sm_90a' cannot be compiled to future architecture`. This needs an NVIDIA
+**R570+** host driver (check with `nvidia-smi`); no system CUDA toolkit is required.
+
+`distrax` (0.1.5, its final release) references `jax.core.Var` / `jax.core.Literal`, which
+JAX 0.6 moved to `jax.extend.core`. Run the one-off patch once per environment (re-run it
+after any reinstall of `distrax`):
+
+```bash
+uv run bash scripts/patch_distrax_jax060.sh   # or: bash scripts/patch_distrax_jax060.sh with the venv active
+```
+
+The patch is idempotent, keeps a `.bak`, and verifies `import distrax` at the end.
+
 ## Datasets
 
 ### OGBench (single-task, 100M)

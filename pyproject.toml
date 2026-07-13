@@ -1,17 +1,17 @@
 [project]
 name = "qgf"
 version = "0.0.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "absl-py",
     "distrax",
     "dm-control",
     "dm-env",
-    "flax",
+    "flax==0.10.2",
     "gymnasium==0.29.1",
     "h5py",
     "imageio",
-    "jax[cuda12]==0.4.30",
+    "jax[cuda12]==0.6.2",
     "lxml",
     "ml-collections",
     "mujoco-py>=2.1.2.14",
