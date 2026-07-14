@@ -46,15 +46,34 @@ compile for Blackwell (`sm_120`). Older JAX (e.g. 0.4.x) fails at compile time w
 `target 'sm_90a' cannot be compiled to future architecture`. This needs an NVIDIA
 **R570+** host driver (check with `nvidia-smi`); no system CUDA toolkit is required.
 
-`distrax` (0.1.5, its final release) references `jax.core.Var` / `jax.core.Literal`, which
-JAX 0.6 moved to `jax.extend.core`. Run the one-off patch once per environment (re-run it
-after any reinstall of `distrax`):
+**One-click setup.** On a Blackwell box, after creating the venv, run the helper instead of a
+bare `uv sync` — it resolves + installs the `0.6.2` stack, applies the required `distrax` patch,
+regenerates `requirements.txt`, and smoke-tests the result:
 
 ```bash
-uv run bash scripts/patch_distrax_jax060.sh   # or: bash scripts/patch_distrax_jax060.sh with the venv active
+uv venv --python 3.10 && source .venv/bin/activate
+bash setup_env.sh
 ```
 
-The patch is idempotent, keeps a `.bak`, and verifies `import distrax` at the end.
+<details>
+<summary>What <code>setup_env.sh</code> does / options</summary>
+
+`uv lock` → `UV_LINK_MODE=copy uv sync` → patch distrax → `uv export -o requirements.txt` → smoke test
+(`import jax/flax/distrax`, print devices, `import utils.networks`).
+
+```bash
+bash setup_env.sh --patch-only   # ONLY re-run the distrax patch (after a distrax reinstall)
+bash setup_env.sh --skip-lock    # reuse the existing uv.lock
+bash setup_env.sh --no-smoke     # skip the smoke test
+```
+</details>
+
+**Why the `distrax` patch.** `distrax` (0.1.5, its final release) references `jax.core.Var` /
+`jax.core.Literal`, which JAX 0.6 moved to `jax.extend.core`. `scripts/patch_distrax_jax060.sh`
+inserts a version-agnostic shim; it is idempotent, keeps a `.bak`, and verifies `import distrax`
+at the end. The edit lives in site-packages, so it does **not** survive a reinstall — re-run
+`bash setup_env.sh --patch-only` (or `uv run bash scripts/patch_distrax_jax060.sh`) after any
+`uv sync` / `pip install` that reinstalls `distrax`.
 
 ## Datasets
 

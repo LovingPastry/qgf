@@ -105,14 +105,23 @@ build_default_sweep() {
 }
 
 build_from_file() {
-  local line idx=0
+  local line idx=0 pending_name=""
   while IFS= read -r line || [ -n "$line" ]; do
-    # 跳过空行和以 # 开头的注释行
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    # 以 # 开头的注释行：若形如「# name」，记为下一条命令的作业名；否则忽略
+    if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*(.+)$ ]]; then
+      pending_name="${BASH_REMATCH[1]}"
+      pending_name="${pending_name%%[[:space:]]}"   # 去尾部空白
+      continue
+    fi
     [[ -z "${line//[[:space:]]/}" ]] && continue
     idx=$((idx + 1))
     CMDS+=("$line")
-    NAMES+=("$(printf 'run_%03d' "$idx")")
+    if [ -n "$pending_name" ]; then
+      NAMES+=("$pending_name")
+    else
+      NAMES+=("$(printf 'run_%03d' "$idx")")
+    fi
+    pending_name=""
   done < "$CMD_FILE"
 }
 

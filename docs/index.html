@@ -318,6 +318,7 @@
       <a href="#overview">概览</a>
       <a href="#problem">问题</a>
       <a href="#background">背景</a>
+      <a href="#why-approx">为何近似</a>
       <a href="#estimator">估计器</a>
       <a href="#code">代码对照</a>
       <a href="#run">怎么跑</a>
@@ -439,6 +440,76 @@
     <div class="eq"><span class="body">∇<sub>a<sub>t</sub></sub> log π(a<sub>t</sub>|s) ≈ ∇<sub>a<sub>t</sub></sub> log π̂(a<sub>t</sub>|s) <span class="op">+</span> (1/β)·∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span><span class="num">(5)</span></div>
     <p>直觉：在去噪速度上<strong>加一项价值梯度</strong>，就把参考策略往高 Q 方向推 —— 权重 <span class="m">1/β</span> 越大越激进。这正是「用学到的 Q 当分类器」的 classifier guidance。<strong>唯一的问题只剩一个：式 (5) 里那项 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span> 怎么算才靠谱？</strong></p>
     <div class="call warn"><b>式 (5) 的陷阱：</b>直接照它在噪声动作 <span class="m">a<sub>t</sub></span> 上取 Q 梯度，就是「OOD 梯度」（QFQL 的做法）。<span class="m">a<sub>t</sub>∈ℝ<sup>|A|</sup></span> 甚至可能不是合法动作，而 critic 从没见过它 —— 梯度有偏，收敛到次优（Fig 2）。</div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- ============================ 为什么需要这些近似 ============================ -->
+<section id="why-approx">
+  <div class="wrap reveal">
+    <div class="eyebrow">Why These Approximations</div>
+    <h2 class="sec">这些近似，是被两个约束逼出来的</h2>
+    <p>式 (5) 写下来很干净，可一旦要把那项 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span> 算成一个<strong>能用的</strong>梯度，就会同时撞上两堵墙。QGF 的每一步近似都不是随手偷懒，而是为拆掉其中一个死结而生。先把矛盾摆清楚：</p>
+
+    <div class="call warn"><b>约束一 · critic 只认「干净动作」。</b> IQL 的 <span class="m">Q</span> 全程只在数据集里的<strong>真实动作</strong>上训练（<a href="#code">代码</a> 第 91、99 行）。而去噪中途的 <span class="m">a<sub>t</sub>=(1−t)a<sub>0</sub>+t·a<sub>1</sub></span> 是个半噪声量，对 critic 完全是 OOD —— 直接取 <span class="m">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>t</sub>)</span> 拿到的是外推出来的垃圾方向（这正是 QFQL 收敛到次优的原因）。</div>
+    <div class="call warn"><b>约束二 · 动作梯度得穿过整条 ODE。</b> 动作 <span class="m">a<sub>1</sub></span> 是 <span class="m">T</span> 步去噪的复合函数，任何「真」梯度都要对整条链做 BPTT（式 6）—— 显存与算力翻 <span class="m">T</span> 倍，且方差随链长放大、数值不稳。</div>
+
+    <p>两条约束把可行域夹成一条窄缝：<strong>既要在 critic 可信的干净动作域上取梯度（否则违反约束一），又不能真去跑完、反传整条去噪链（否则撞上约束二）。</strong> 下面三步近似，正是穿过这条缝的走法。</p>
+
+    <h3>① 一步 Euler：廉价地拿到「干净动作」</h3>
+    <p>不跑完剩下的 <span class="m">T−1</span> 步，只用当前速度场做<strong>一次</strong>大跳，直接估出去噪终点 <span class="m">â<sub>1</sub></span>（式 7 / 代码 <a href="#code">第 200 行</a>）。一次前向，就把「带噪的 <span class="m">a<sub>t</sub></span>」翻译成 critic 认识的「近似干净动作」—— 这座桥同时绕过了<b>约束一</b>（Q 评在干净点上）与<b>约束二</b>（不必跑完整条链）。</p>
+
+    <h3>② 丢掉 Jacobian（<span class="m">Ĵ=I</span>）：廉价地拿到它的梯度</h3>
+    <p><span class="m">â<sub>1</sub></span> 仍通过速度网络依赖 <span class="m">a<sub>t</sub></span>，严格链式法则要算 <span class="m">∂â<sub>1</sub>/∂a<sub>t</sub></span>，其中那项网络 Jacobian <span class="m">∂v<sub>θ</sub>/∂a<sub>t</sub></span> 又把<b>约束二</b>换个马甲请了回来。论文发现它贡献的方差远大于方向修正，于是干脆近似成单位阵：</p>
+    <div class="eq"><span class="body">∇<sub>a<sub>t</sub></sub>Q(s,a<sub>1</sub>) ≈ <span class="op">[</span> I <span class="op">+</span> (1<span class="op">−</span>t)·∂v<sub>θ</sub>/∂a<sub>t</sub> <span class="op">]</span><sup>⊤</sup> ∇<sub>â<sub>1</sub></sub>Q &nbsp;<span class="op">⟶</span>&nbsp; <span class="op">(</span>Ĵ=I<span class="op">)</span> &nbsp;<span class="op">⟶</span>&nbsp; ∇<sub>â<sub>1</sub></sub>Q(s,â<sub>1</sub>)</span><span class="num"> </span></div>
+    <p>在代码里，这个「丢弃」不是一个 <code>if</code> 分支，而是 <a href="#code">第 199、209 行</a>两处 <code>stop_gradient</code> 的自然结果：切断 <span class="m">â<sub>1</sub></span> 对 <span class="m">a<sub>t</sub></span> 的全部依赖后，<code>jax.grad</code> 求出的就纯是 <span class="m">∇<sub>â<sub>1</sub></sub>Q</span>。</p>
+
+    <h3>③ 训练不做 RL：从根上避开发散</h3>
+    <p>还有第三堵墙藏在训练里：离线场景下，只要让 <span class="m">Q</span> 去评估策略<strong>生成</strong>的动作，就会 OOD 高估、自举发散。QGF 干脆<strong>不在训练里做策略提升</strong> —— actor 是纯 BC 流匹配、critic 是纯 IQL，两者都不采样策略动作（<a href="#code">代码</a> 第 132–143 行），把 <span class="m">Q</span> 的作用整个推迟到推理时的引导（第 225 行）。于是不稳定的 actor-critic 优化，降维成两个稳定的回归。</p>
+
+    <h3>四个梯度估计器，一张偏差-方差表</h3>
+    <p>把「怎么算式 (5) 那项梯度」的所有选择摆在一起，就能看清 QGF 落在哪个甜点上：</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>估计器</th><th>在哪取 Q 梯度</th><th>Jacobian</th><th>代价 / 方差</th><th>偏差</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>OOD（式 5，QFQL）</td>
+            <td>噪声动作 <span class="m">a<sub>t</sub></span></td>
+            <td>—</td>
+            <td>低</td>
+            <td><b>大</b>（OOD，收敛到次优）</td>
+          </tr>
+          <tr>
+            <td>BPTT（式 6）</td>
+            <td>真终点 <span class="m">a<sub>1</sub></span></td>
+            <td>反传整条链</td>
+            <td><b>高</b>（∝ 链长）</td>
+            <td>无（无偏）</td>
+          </tr>
+          <tr>
+            <td>QGF-Jacobian（式 8）</td>
+            <td>近似干净 <span class="m">â<sub>1</sub></span></td>
+            <td>单步映射的 <span class="m">J</span></td>
+            <td>中（仍要对 <span class="m">v<sub>θ</sub></span> 求导）</td>
+            <td>小</td>
+          </tr>
+          <tr class="win">
+            <td>QGF（式 9）</td>
+            <td>近似干净 <span class="m">â<sub>1</sub></span></td>
+            <td>丢弃，<span class="m">Ĵ=I</span></td>
+            <td><b>最低</b></td>
+            <td>小（可控）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>所以「丢掉 Jacobian」本质是一次<strong>偏差-方差取舍</strong>：接受一点点偏差（忽略 <span class="m">a<sub>t</sub></span> 如何反过来重塑去噪方向），换掉一大块方差与算力。论文分析（Fig 3 / Fig 4）表明 QGF 的梯度方差最低、对输入噪声最不敏感，因而是最好的「Q 值优化器」。</p>
+
+    <div class="call key"><b>一句话看穿：</b> 图像扩散里的 classifier guidance 需要一个<b>能吃各噪声等级</b>的 noise-aware 分类器；QGF 不想要这种特制 critic，就用「一步 Euler 把噪声态翻译成干净态」当桥，让一个<b>普通的干净动作 critic（IQL）</b>也能在每一步去噪里做引导。这座桥，就是所有近似的共同由来。</div>
   </div>
 </section>
 
